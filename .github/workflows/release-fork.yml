@@ -1,0 +1,53 @@
+name: Runner CD
+
+# Builds and publishes the patched runner from the ref this workflow is
+# dispatched on. The version comes from src/runnerversion on that ref, so a
+# release branch cut from an upstream tag (e.g. release/v2.338.2 from
+# actions/runner v2.338.2 + fork patches) publishes exactly that version.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(tr -d '[:space:]' < src/runnerversion)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building runner ${VERSION} from ${GITHUB_REF} (${GITHUB_SHA})"
+          if gh release view "v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::Release v${VERSION} already exists"
+            exit 1
+          fi
+
+      - name: Build & Layout Release
+        run: ./dev.sh layout Release linux-x64
+        working-directory: src
+
+      - name: Package Release
+        run: ./dev.sh package Release linux-x64
+        working-directory: src
+
+      - name: Create release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ASSET="_package/actions-runner-linux-x64-${VERSION}.tar.gz"
+          sha256sum "${ASSET}" | tee "${ASSET}.sha256"
+
+          gh release create "v${VERSION}" "${ASSET}" "${ASSET}.sha256" \
+            --repo "${{ github.repository }}" \
+            --target "${GITHUB_SHA}" \
+            --latest \
+            --title "v${VERSION}" \
+            --notes "actions/runner v${VERSION} plus fork patches (CUSTOM_ACTIONS_RESULTS_URL override, self-update skipped when it is set). Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA}. See [upstream release notes](https://github.com/actions/runner/releases/tag/v${VERSION})."
